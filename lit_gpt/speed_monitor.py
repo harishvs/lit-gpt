@@ -5,57 +5,62 @@ from typing import Any, Callable, Deque, Dict, Optional
 
 import torch
 from lightning import Callback, Fabric, LightningModule, Trainer
+from lightning.fabric.accelerators.xla import _XLA_GREATER_EQUAL_2_1
+from lightning.fabric.plugins import (
+    BitsandbytesPrecision,
+    DoublePrecision,
+    FSDPPrecision,
+    HalfPrecision,
+    MixedPrecision,
+    Precision,
+    TransformerEnginePrecision,
+    XLAPrecision,
+)
 from lightning.fabric.utilities.rank_zero import rank_zero_only as fabric_rank_zero_only
+from lightning.pytorch.plugins import (
+    DoublePrecisionPlugin,
+    FSDPPrecisionPlugin,
+    HalfPrecisionPlugin,
+    MixedPrecisionPlugin,
+    XLAPrecisionPlugin,
+)
 from lightning.pytorch.utilities.rank_zero import rank_zero_only as trainer_rank_zero_only
 from torch.utils.flop_counter import FlopCounterMode
 
-from lit_gpt import GPT, Config
+from lit_gpt import GPT
 from lit_gpt.utils import num_parameters
 
 GPU_AVAILABLE_FLOPS = {
     # source: https://resources.nvidia.com/en-us-tensor-core/nvidia-tensor-core-gpu-datasheet
     # nvidia publishes spec sheet with a 2x sparsity factor
     "h100-sxm": {
-        "64-true": 67e12,
-        "32-true": 67e12,
-        "16-true": 1.979e15 / 2,
-        "16-mixed": 1.979e15 / 2,
-        "bf16-true": 1.979e15 / 2,
-        "bf16-mixed": 1.979e15 / 2,
-        "8-true": 3.958e15 / 2,
-        "8-mixed": 3.958e15 / 2,
+        torch.float64: 67e12,
+        torch.float32: 67e12,
+        torch.bfloat16: 1.979e15 / 2,
+        torch.float16: 1.979e15 / 2,
+        torch.int8: 3.958e15 / 2,
     },
     "h100-pcie": {
-        "64-true": 51e12,
-        "32-true": 51e12,
-        "16-true": 1.513e15 / 2,
-        "16-mixed": 1.513e15 / 2,
-        "bf16-true": 1.513e15 / 2,
-        "bf16-mixed": 1.513e15 / 2,
-        "8-true": 3.026e15 / 2,
-        "8-mixed": 3.026e15 / 2,
+        torch.float64: 51e12,
+        torch.float32: 51e12,
+        torch.bfloat16: 1.513e15 / 2,
+        torch.float16: 1.513e15 / 2,
+        torch.int8: 3.026e15 / 2,
     },
     # source: https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a100/pdf/nvidia-a100-datasheet-us-nvidia-1758950-r4-web.pdf
     # sxm and pcie have same flop counts
-    "a100": {
-        "64-true": 19.5e12,
-        "32-true": 19.5e12,
-        "16-true": 312e12,
-        "16-mixed": 312e12,
-        "bf16-true": 312e12,
-        "bf16-mixed": 312e12,
-    },
+    "a100": {torch.float64: 19.5e12, torch.float32: 19.5e12, torch.bfloat16: 312e12, torch.float16: 312e12},
     # source: https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/a10/pdf/a10-datasheet.pdf
-    "a10g": {"32-true": 31.2e12, "16-true": 125e12, "16-mixed": 125e12, "bf16-true": 125e12, "bf16-mixed": 125e12},
+    "a10g": {torch.float32: 31.2e12, torch.bfloat16: 125e12, torch.float16: 125e12},
     # source: https://images.nvidia.com/content/technologies/volta/pdf/volta-v100-datasheet-update-us-1165301-r5.pdf
-    "v100-sxm": {"64-true": 7.8e12, "32-true": 15.7e12, "16-true": 125e12, "16-mixed": 125e12},
-    "v100-pcie": {"64-true": 7e12, "32-true": 14e12, "16-true": 112e12, "16-mixed": 112e12},
-    "v100s-pcie": {"64-true": 8.2e12, "32-true": 16.4e12, "16-true": 130e12, "16-mixed": 130e12},
+    "v100-sxm": {torch.float64: 7.8e12, torch.float32: 15.7e12, torch.float16: 125e12},
+    "v100-pcie": {torch.float64: 7e12, torch.float32: 14e12, torch.float16: 112e12},
+    "v100s-pcie": {torch.float64: 8.2e12, torch.float32: 16.4e12, torch.float16: 130e12},
     # source: https://www.nvidia.com/content/dam/en-zz/Solutions/Data-Center/tesla-t4/t4-tensor-core-datasheet-951643.pdf
     # sxm and pcie have same flop counts
-    "t4": {"32-true": 8.1e12, "16-true": 65e12, "16-mixed": 65e12, "8-true": 130e12, "int4": 260e12},
+    "t4": {torch.float32: 8.1e12, torch.float16: 65e12, torch.int8: 130e12},
     # https://www.nvidia.com/content/dam/en-zz/Solutions/design-visualization/quadro-product-literature/quadro-rtx-5000-data-sheet-us-nvidia-704120-r4-web.pdf
-    "quadro rtx 5000": {"32-true": 11.2e12, "16-true": 89.2e12, "16-mixed": 89.2e12},
+    "quadro rtx 5000": {torch.float32: 11.2e12, torch.float16: 89.2e12},
 }
 
 TPU_AVAILABLE_FLOPS = {
@@ -68,10 +73,12 @@ TPU_AVAILABLE_FLOPS = {
     "v3": 123e12,
     # source: https://cloud.google.com/tpu/docs/system-architecture-tpu-vm#tpu_v4
     "v4": 275e12,
+    # source: https://cloud.google.com/tpu/docs/v5e-training
+    "v5litepod": 197e12,
 }
 
 
-def get_flops_available(device: torch.device, precision: str) -> Optional[float]:
+def get_flops_available(device: torch.device, dtype: torch.dtype) -> Optional[float]:
     if device.type == "cuda":
         device_name = torch.cuda.get_device_name(device).lower()
         if "h100" in device_name and "hbm3" in device_name:
@@ -95,22 +102,24 @@ def get_flops_available(device: torch.device, precision: str) -> Optional[float]
 
         if device_name is not None:
             try:
-                return int(GPU_AVAILABLE_FLOPS[device_name][precision])
+                return int(GPU_AVAILABLE_FLOPS[device_name][dtype])
             except KeyError:
                 raise KeyError(
-                    f"flop count not found for {device_name} with precision: {precision}; "
+                    f"flop count not found for {device_name} with dtype: {dtype}; "
                     "MFU cannot be calculated and reported."
                 )
     elif device.type == "xla":
-        from torch_xla.experimental import tpu
+        if _XLA_GREATER_EQUAL_2_1:
+            from torch_xla._internal import tpu
+        else:
+            from torch_xla.experimental import tpu
 
         device_name = tpu.get_tpu_env()["TYPE"].lower()
         try:
             return int(TPU_AVAILABLE_FLOPS[device_name])
         except KeyError:
             raise KeyError(
-                f"flop count not found for {device_name} with precision: {precision}; "
-                "MFU cannot be calculated and reported."
+                f"flop count not found for {device_name} with dtype: {dtype}; MFU cannot be calculated and reported."
             )
 
     return None
@@ -221,7 +230,7 @@ class SpeedMonitorBase:
         world_size: int,
         flops_per_batch: Optional[int] = None,  # (per device)
         lengths: Optional[int] = None,  # total length of the samples seen (per device)
-    ):
+    ) -> None:
         self.step += 1
         step = self.step
         metrics = {}
@@ -281,18 +290,38 @@ class SpeedMonitorBase:
 
         self.log_dict(metrics, step)
 
-    def eval_end(self, eval_elapsed: float):
+    def eval_end(self, eval_elapsed: float) -> None:
         self.total_eval_wct += eval_elapsed  # seconds
+
+
+def plugin_to_compute_dtype(plugin: Precision) -> torch.dtype:
+    if isinstance(plugin, BitsandbytesPrecision):
+        return plugin.dtype
+    if isinstance(plugin, (HalfPrecision, MixedPrecision, HalfPrecisionPlugin)):
+        return plugin._desired_input_dtype
+    if isinstance(plugin, MixedPrecisionPlugin):
+        return torch.bfloat16 if plugin.precision == "bf16-mixed" else torch.half
+    if isinstance(plugin, (DoublePrecision, DoublePrecisionPlugin)):
+        return torch.double
+    if isinstance(plugin, (XLAPrecision, XLAPrecisionPlugin)):
+        return plugin._desired_dtype
+    if isinstance(plugin, TransformerEnginePrecision):
+        return torch.int8
+    if isinstance(plugin, (FSDPPrecision, FSDPPrecisionPlugin)):
+        return plugin.mixed_precision_config.reduce_dtype
+    if isinstance(plugin, Precision):
+        return torch.float32
+    raise NotImplementedError(plugin)
 
 
 class SpeedMonitorFabric(SpeedMonitorBase):
     def __init__(self, fabric: Fabric, *args: Any, **kwargs: Any) -> None:
-        # TODO: this will not work properly if a precision plugin is passed to Fabric
-        flops_available = get_flops_available(fabric.device, fabric._connector._precision_input)
+        dtype = plugin_to_compute_dtype(fabric.strategy.precision)
+        flops_available = get_flops_available(fabric.device, dtype)
         super().__init__(flops_available, fabric.log_dict, *args, **kwargs)
 
     @fabric_rank_zero_only
-    def on_train_batch_end(self, *args: Any, **kwargs: Any):
+    def on_train_batch_end(self, *args: Any, **kwargs: Any) -> None:
         super().on_train_batch_end(*args, **kwargs)
 
 
@@ -310,10 +339,8 @@ class SpeedMonitorCallback(Callback):
     def setup(self, trainer: Trainer, pl_module: LightningModule, stage: str) -> None:
         if self.speed_monitor is not None:
             return  # already setup
-        # TODO: this will not work properly if a precision plugin is passed to Trainer
-        flops_available = get_flops_available(
-            trainer.strategy.root_device, trainer._accelerator_connector._precision_flag
-        )
+        dtype = plugin_to_compute_dtype(trainer.precision_plugin)
+        flops_available = get_flops_available(trainer.strategy.root_device, dtype)
         self.speed_monitor = SpeedMonitorBase(flops_available, trainer.logger.log_metrics, **self.speed_monitor_kwargs)
 
     @trainer_rank_zero_only
@@ -354,12 +381,12 @@ class SpeedMonitorCallback(Callback):
         self.speed_monitor.eval_end(eval_elapsed)
 
 
-def flops_per_param(config: Config, n_params: int) -> int:
+def flops_per_param(max_seq_length: int, n_layer: int, n_embd: int, n_params: int) -> int:
     flops_per_token = 2 * n_params  # each parameter is used for a MAC (2 FLOPS) per network operation
     # this assumes that all samples have a fixed length equal to the block size
     # which is most likely false during finetuning
-    flops_per_seq = flops_per_token * config.block_size
-    attn_flops_per_seq = config.n_layer * 2 * 2 * (config.n_embd * (config.block_size**2))
+    flops_per_seq = flops_per_token * max_seq_length
+    attn_flops_per_seq = n_layer * 2 * 2 * (n_embd * (max_seq_length**2))
     return flops_per_seq + attn_flops_per_seq
 
 
@@ -375,11 +402,13 @@ def estimate_flops(model: GPT) -> int:
     # (~10%) compared to the measured FLOPs, making those lower but more realistic.
     # For a proper estimate, this needs a more fine-grained calculation as in Appendix A of the paper.
     n_trainable_params = num_parameters(model, requires_grad=True)
-    trainable_flops = flops_per_param(model.config, n_trainable_params)
+    trainable_flops = flops_per_param(
+        model.max_seq_length, model.config.n_layer, model.config.n_embd, n_trainable_params
+    )
     # forward + backward + gradients (assumes no gradient accumulation)
     ops_per_step = 3 if model.training else 1
     n_frozen_params = num_parameters(model, requires_grad=False)
-    frozen_flops = flops_per_param(model.config, n_frozen_params)
+    frozen_flops = flops_per_param(model.max_seq_length, model.config.n_layer, model.config.n_embd, n_frozen_params)
     # forward + backward
     frozen_ops_per_step = 2 if model.training else 1
     return ops_per_step * trainable_flops + frozen_ops_per_step * frozen_flops

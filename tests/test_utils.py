@@ -1,52 +1,11 @@
 import os
-import pathlib
 import sys
-import tempfile
 from contextlib import redirect_stderr
 from io import StringIO
 
 import pytest
 import torch
 import torch.nn.functional as F
-
-
-class ATensor(torch.Tensor):
-    pass
-
-
-def test_lazy_load_basic():
-    import lit_gpt.utils
-
-    with tempfile.TemporaryDirectory() as tmpdirname:
-        m = torch.nn.Linear(5, 3)
-        path = pathlib.Path(tmpdirname)
-        fn = str(path / "test.pt")
-        torch.save(m.state_dict(), fn)
-        with lit_gpt.utils.lazy_load(fn) as sd_lazy:
-            assert "NotYetLoadedTensor" in str(next(iter(sd_lazy.values())))
-            m2 = torch.nn.Linear(5, 3)
-            m2.load_state_dict(sd_lazy)
-
-        x = torch.randn(2, 5)
-        actual = m2(x)
-        expected = m(x)
-        torch.testing.assert_close(actual, expected)
-
-
-def test_lazy_load_subclass():
-    import lit_gpt.utils
-
-    with tempfile.TemporaryDirectory() as tmpdirname:
-        path = pathlib.Path(tmpdirname)
-        fn = str(path / "test.pt")
-        t = torch.randn(2, 3)[:, 1:]
-        sd = {1: t, 2: torch.nn.Parameter(t), 3: torch.Tensor._make_subclass(ATensor, t)}
-        torch.save(sd, fn)
-        with lit_gpt.utils.lazy_load(fn) as sd_lazy:
-            for k in sd:
-                actual = sd_lazy[k]
-                expected = sd[k]
-                torch.testing.assert_close(actual._load_tensor(), expected)
 
 
 def test_find_multiple():
@@ -117,6 +76,7 @@ def test_incremental_write(tmp_path):
     from lit_gpt.utils import incremental_save
 
     sd = {str(k): torch.randn(5, 10) for k in range(3)}
+    sd["0"].someattr = 1
     sd_expected = {k: v.clone() for k, v in sd.items()}
     fn = str(tmp_path / "test.pt")
     with incremental_save(fn) as f:
@@ -125,6 +85,7 @@ def test_incremental_write(tmp_path):
         f.save(sd)
     sd_actual = torch.load(fn)
     assert sd_actual.keys() == sd_expected.keys()
+    assert sd_actual["0"].someattr == 1  # requires PyTorch 2.0+
     for k, v_expected in sd_expected.items():
         v_actual = sd_actual[k]
         torch.testing.assert_close(v_expected, v_actual)
