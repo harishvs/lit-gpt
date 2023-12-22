@@ -33,23 +33,45 @@ Check out our [quantization tutorial](quantize.md).
 
 ## Run a large model on multiple smaller devices
 
-You can also use the Fully-Sharded Data Parallel (FSDP) distributed strategy to leverage multiple devices to perform inference. This will allow you to run models that wouldn't fit in a single card by sharding them across several.
+You can also use the `generate/sequentially.py` script to leverage multiple devices to perform inference.
+This will allow you to run models that wouldn't fit in a single card by partitioning the weights across all your devices and running the layers sequentially.
 
-For instance, `falcon-40b` would require ~80 GB of GPU memory to run on a single device. We can instead run it on 4 A100 40GB GPUs:
-
-```shell
-python generate/base.py --checkpoint_dir checkpoints/tiiuae/falcon-40b --strategy fsdp --devices 4
-```
-
-Which will take ~25 GB of memory, and run at 2.5 tokens/sec.
-
-Or to reduce the memory requirements even further, you can try using CPU offloading. For that, you will need to manually edit the `cpu_offload=False` parameter in the file and set it to `True`.
-
-Now we can run it on just 2 devices.
+For instance, `meta-llama/Llama-2-70b-chat-hf` would require ~140 GB of GPU memory to load on a single device, plus the memory for activations.
+With 80 transformer layers, we could partition them across 8, 5, 4, or 2 devices. 
 
 ```shell
-python generate/base.py --checkpoint_dir checkpoints/tiiuae/falcon-40b --strategy fsdp --devices 2
+python generate/sequentially.py \
+  --checkpoint_dir checkpoints/meta-llama/Llama-2-70b-chat-hf \
+  --max_new_tokens 256 \
+  --num_samples 2
 ```
 
-taking ~5 GB of memory but running at 0.23 tokens/sec on 2 A100 40GB GPUs.
-Smaller devices like 3090s (24 GB) can also fit it with this technique.
+Using A100 40GB GPUs, we need to use at least 4. You can control the number of devices by setting the `CUDA_VISIBLE_DEVICES=` environment variable.
+
+| Devices | Max GPU RAM | Token/sec |
+|---------|-------------|-----------|
+| 2       | OOM         | -         |
+| 4       | 35.36 GB    | 7.48      |
+| 5       | 28.72 GB    | 7.45      |
+| 8       | 18.35 GB    | 7.42      |
+
+Note that the memory usage will also depend on the `max_new_tokens` value used.
+
+The script also supports quantization, using 4-bit precision, we can now use 2 GPUs
+
+```shell
+python generate/sequentially.py \
+  --checkpoint_dir checkpoints/meta-llama/Llama-2-70b-chat-hf \
+  --max_new_tokens 256 \
+  --num_samples 2 \
+  --quantize bnb.nf4-dq
+```
+
+| Devices | Max GPU RAM | Token/sec |
+|---------|-------------|-----------|
+| 2       | 19.99 GB    | 8.60      |
+| 4       | 10.80 GB    | 8.12      |
+| 5       | 8.96 GB     | 8.09      |
+| 8       | 6.23 GB     | 8.00      |
+
+Smaller devices can also be used to run inference with this technique.
