@@ -19,9 +19,9 @@ from lit_gpt.model import GPT, Block, Config
 from lit_gpt.packed_dataset import CombinedDataset, PackedDataset
 from lit_gpt.utils import chunked_cross_entropy, estimate_flops, get_default_supported_precision, num_parameters
 
-model_name = "Llama-2-7b-hf"
-name = "redpajama"
-out_dir = Path("out") / name
+model_name = "Llama-2-7b-chat-hf"
+name = "redpajama-sample"
+out_dir = Path("/data/fsx/out") / name
 save_interval = 1000
 eval_interval = 1000
 eval_iters = 100

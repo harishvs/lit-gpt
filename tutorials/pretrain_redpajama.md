@@ -51,20 +51,27 @@ on it, you need to read, tokenize, and write the data in binary chunks. This wil
 streaming dataset that comes with lit-gpt. You will need to have the tokenizer config available:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+
 pip install huggingface_hub sentencepiece
+
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 python scripts/download.py \
    --repo_id meta-llama/Llama-2-7b-chat-hf \
-   --access_token your_hf_token \
+   --access_token $hf_token \
    --tokenizer_only true
 ```
+
+`mkdir -p checkpoints/meta-llama/Llama-2-7b-hf`
 
 Then, run
 
 ```bash
 python scripts/prepare_redpajama.py \
   --source_path data/RedPajama-Data-1T \
-  --checkpoint_dir checkpoints/meta-llama/Llama-2-7b-hf/ \
+  --checkpoint_dir checkpoints/meta-llama/Llama-2-7b-chat-hf/ \
   --destination_path data/lit-redpajama
 ```
 
@@ -73,10 +80,12 @@ or
 ```bash
 python scripts/prepare_redpajama.py \
   --source_path data/RedPajama-Data-1T-Sample \
-  --checkpoint_dir checkpoints/meta-llama/Llama-2-7b-hf/ \
+  --checkpoint_dir checkpoints/meta-llama/Llama-2-7b-chat-hf/ \
   --destination_path data/lit-redpajama-sample \
   --sample True
 ```
+
+
 
 for the sample dataset.
 
@@ -101,6 +110,18 @@ python pretrain/redpajama.py \
   --devices 4 \
   --train_data_dir data/lit-redpajama-sample
 ```
+
+# to run on slurm
+
+Copy the data in data/lit-redpajama-sample to S3
+
+`aws s3 cp data/lit-redpajama-sample s3://slinky-on-eks-fsx-20241227080801525200000003/lit-redpajama-sample --recursive --debug`
+
+where the s3 bucket is a backing s3 bucket for a fsx/s3 dra.
+
+then use slurm.sh to submit the job
+
+
 
 The script will save checkpoints periodically to the folder `out/`.
 
