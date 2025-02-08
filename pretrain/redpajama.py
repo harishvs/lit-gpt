@@ -79,7 +79,7 @@ def setup(
     else:
         strategy = "auto"
 
-    fabric = L.Fabric(devices=devices, strategy=strategy, precision=precision, loggers=logger)
+    fabric = L.Fabric(acclerator='gpu',devices=devices, strategy=strategy, precision=precision, loggers=logger)
     fabric.print(hparams)
     fabric.launch(main, train_data_dir, val_data_dir, resume)
 
