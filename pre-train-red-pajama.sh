@@ -13,16 +13,23 @@ cat >lit-redpajama-sample <<EOD
 export NCCL_DEBUG=INFO
 export PYTHONFAULTHANDLER=1
 
+# Force IPv4
+export NCCL_SOCKET_FAMILY=AF_INET
+
+
 PATH=/home/.openmpi/bin:/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 LD_LIBRARY_PATH=/home/.openmpi/lib:/lib/x86_64-linux-gnu:/opt/conda/lib:/usr/local/lib:/usr/local/lib:
 
-# srun python -c "print('hello python')"
+# srun python -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+# srun whoami
+
+source /opt/conda/etc/profile.d/conda.sh
+conda activate lit-redpajama-sample
+
 
 rm -rf lit-gpt || true
 git clone https://github.com/harishvs/lit-gpt.git
 cd lit-gpt
-pip install jsonargparse
-pip install lightning@git+https://github.com/Lightning-AI/lightning@6dfa5cca9de5c28548eef5582a53c483b0eda66a
 srun python /tmp/lit-gpt/pretrain/redpajama.py --devices 4 --train_data_dir /data/fsx/lit-redpajama-sample
 EOD
 
